@@ -15,20 +15,19 @@ from bs4 import BeautifulSoup
 # ---------- CONFIG ----------
 VENUES = [
     {"id": 10831, "label": "Fhain Ride",    "emoji": "🚴"},
-    {"id": 24862, "label": "Boxi Circuit",  "emoji": "🥊"},
+    {"id": 24862, "label": "Boxi Circuit",  "emoji": "💪🏼"},
 ]
-CITY = 1                    # 1 = Berlin
+CITY = 1
 DAYS_AHEAD = 14
-SERVICE_TYPES = [0, 1]      # USC splits classes across two service_type values; fetch both
+SERVICE_TYPES = [0, 1]
 OUTPUT_ICS = Path("usc.ics")
-DEBUG_DIR = Path("debug")   # raw HTML dumps for troubleshooting
+DEBUG_DIR = Path("debug")
 TIMEZONE = "Europe/Berlin"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 # ----------------------------
 
 
 def fetch_day(venue_id: int, date: str, service_type: int) -> str:
-    """Hit the USC activities endpoint, return the HTML blob from data.content."""
     url = "https://urbansportsclub.com/en/activities"
     params = {
         "service_type": service_type,
@@ -48,22 +47,27 @@ def fetch_day(venue_id: int, date: str, service_type: int) -> str:
     return payload.get("data", {}).get("content", "") or ""
 
 
+def looks_like_real_title(s: str) -> bool:
+    """Reject junk titles like '—, 17:00, Fhain Ride' or dash-only strings."""
+    if not s:
+        return False
+    if len(re.findall(r"[A-Za-zÀ-ÿ]", s)) < 3:
+        return False
+    if re.fullmatch(r"[\s\-–—,.:;]+", s):
+        return False
+    return True
+
+
 def parse_classes(html: str, date: str, venue_label: str) -> list[dict]:
-    """
-    Extract class entries from the HTML blob.
-    Returns: list of {start: datetime, end: datetime, title: str, coach: str, raw: str}
-    Defensive: tries multiple selectors. If structure changes, returns [] and dumps HTML.
-    """
     soup = BeautifulSoup(html, "html.parser")
     classes = []
 
-    # Each class is rendered as a div with class containing "smm-class-snippet"
     snippets = soup.select('div[class*="smm-class-snippet"]')
 
     for snip in snippets:
         text = snip.get_text(" ", strip=True)
 
-        # Time pattern: "HH:MM" or "HH:MM - HH:MM"
+        # Time extraction
         time_match = re.search(r"(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})", text)
         if time_match:
             start_str, end_str = time_match.group(1), time_match.group(2)
@@ -74,25 +78,24 @@ def parse_classes(html: str, date: str, venue_label: str) -> list[dict]:
             start_str = single.group(1)
             end_str = None
 
-        # Try to pull a class title: look for known title selectors first, fall back to heuristics
+        # Title — only accept candidates that pass the sanity check
         title = ""
-        for sel in ["h3", "h4", ".class-title", ".activity-title", ".title", "strong"]:
+        for sel in ["h3", "h4", ".class-title", ".activity-title", ".title", "strong", "h5"]:
             el = snip.select_one(sel)
-            if el and el.get_text(strip=True):
-                title = el.get_text(strip=True)
-                break
-        if not title:
-            # Strip the time out of the full text and grab the first chunk
-            cleaned = re.sub(r"\d{1,2}:\d{2}\s*[-–]?\s*\d{0,2}:?\d{0,2}", "", text).strip()
-            title = cleaned.split("  ")[0][:60] if cleaned else "Class"
+            if el:
+                candidate = el.get_text(" ", strip=True)
+                if looks_like_real_title(candidate):
+                    title = candidate
+                    break
+        # No fallback heuristic — empty title is fine, dedup handles it
 
-        # Coach: heuristic, often appears after "with" or in a specific element
+        # Coach (best-effort)
         coach = ""
-        coach_match = re.search(r"\b(?:with|mit|coach)\s+([A-Z][\w\.\-]+(?:\s+[A-Z][\w\.\-]+)?)", text)
-        if coach_match:
-            coach = coach_match.group(1)
+        m = re.search(r"\b(?:with|mit|coach)\s+([A-Z][\wÀ-ÿ\.\-]+(?:\s+[A-Z][\wÀ-ÿ\.\-]+)?)", text)
+        if m:
+            coach = m.group(1)
 
-        # Build datetimes
+        # Datetimes
         try:
             start_dt = datetime.strptime(f"{date} {start_str}", "%Y-%m-%d %H:%M")
         except ValueError:
@@ -100,7 +103,7 @@ def parse_classes(html: str, date: str, venue_label: str) -> list[dict]:
         if end_str:
             try:
                 end_dt = datetime.strptime(f"{date} {end_str}", "%Y-%m-%d %H:%M")
-                if end_dt <= start_dt:  # crossed midnight, unlikely but safe
+                if end_dt <= start_dt:
                     end_dt += timedelta(days=1)
             except ValueError:
                 end_dt = start_dt + timedelta(minutes=45)
@@ -119,8 +122,7 @@ def parse_classes(html: str, date: str, venue_label: str) -> list[dict]:
 
 
 def make_uid(c: dict) -> str:
-    """Stable UID so re-runs update events instead of duplicating."""
-    key = f"{c['venue']}|{c['start'].isoformat()}|{c['title']}"
+    key = f"{c['venue']}|{c['start'].isoformat()}"
     return hashlib.md5(key.encode()).hexdigest() + "@usc-calendar"
 
 
@@ -140,9 +142,9 @@ def to_ics(events: list[dict]) -> str:
         f"X-WR-TIMEZONE:{TIMEZONE}",
     ]
     for c in events:
-        # Find venue emoji
         emoji = next((v["emoji"] for v in VENUES if v["label"] == c["venue"]), "")
-        summary = f"{emoji} {c['venue']} — {c['title']}".strip()
+        title_part = c["title"] if c["title"] else "Class"
+        summary = f"{emoji} {c['venue']} — {title_part}".strip()
         if c["coach"]:
             summary += f" ({c['coach']})"
         lines += [
@@ -161,8 +163,7 @@ def to_ics(events: list[dict]) -> str:
 
 def main():
     DEBUG_DIR.mkdir(exist_ok=True)
-    all_events: list[dict] = []
-    seen_keys: set[str] = set()  # dedupe across service_types
+    best: dict[tuple[str, str], dict] = {}
 
     today = datetime.now().date()
     for offset in range(DAYS_AHEAD):
@@ -175,24 +176,31 @@ def main():
                     print(f"[WARN] fetch failed venue={venue['label']} date={date} st={st}: {e}", file=sys.stderr)
                     continue
 
-                # Dump raw HTML on the very first non-empty response (for debugging)
                 if html and not (DEBUG_DIR / "sample.html").exists():
                     (DEBUG_DIR / "sample.html").write_text(html, encoding="utf-8")
                     print(f"[INFO] saved debug/sample.html ({len(html)} bytes)")
 
                 events = parse_classes(html, date, venue["label"])
                 for e in events:
-                    key = f"{e['venue']}|{e['start'].isoformat()}|{e['title']}"
-                    if key in seen_keys:
-                        continue
-                    seen_keys.add(key)
-                    all_events.append(e)
-                print(f"  {venue['label']} {date} st={st}: {len(events)} classes")
+                    key = (e["venue"], e["start"].isoformat())
+                    existing = best.get(key)
+                    if existing is None:
+                        best[key] = e
+                    else:
+                        ex_ok = looks_like_real_title(existing["title"])
+                        new_ok = looks_like_real_title(e["title"])
+                        if new_ok and not ex_ok:
+                            best[key] = e
+                        elif new_ok and ex_ok and len(e["title"]) > len(existing["title"]):
+                            best[key] = e
+                        if not best[key]["coach"] and e["coach"]:
+                            best[key]["coach"] = e["coach"]
+                print(f"  {venue['label']} {date} st={st}: {len(events)} classes (unique so far: {len(best)})")
 
+    all_events = sorted(best.values(), key=lambda c: c["start"])
     print(f"\nTotal unique events: {len(all_events)}")
     if not all_events:
         print("[ERROR] zero events parsed — check debug/sample.html", file=sys.stderr)
-        # Still write an empty (but valid) calendar so subscribers don't break
     OUTPUT_ICS.write_text(to_ics(all_events), encoding="utf-8")
     print(f"Wrote {OUTPUT_ICS}")
 
