@@ -16,7 +16,6 @@ from bs4 import BeautifulSoup
 VENUES = [
     {"id": 10831, "label": "Beat81-FhainRide", "emoji": "🚴"},
     {"id": 20434, "label": "Beat81-GörliRide", "emoji": "🚴"},
-    {"id": 31839, "label": "Beat81-MitteRide", "emoji": "🚴"},
     {"id": 22434, "label": "Rocycle-Fhain", "emoji": "🚴"},
     {"id": 24862, "label": "Beat81-BoxiCircuit", "emoji": "💪🏼"},
     {"id": 29126, "label": "ClubAthleten-👽LAB", "emoji": "🥊"},
@@ -25,6 +24,7 @@ VENUES = [
     {"id": 23085, "label": "SHALA-XBerg", "emoji": "🧘🏻‍♀️"},
     {"id": 24486, "label": "OPEN-FHain", "emoji": "🧘🏻‍♀️"},
     {"id": 2069, "label": "YogaBarn-LBerg", "emoji": "🧘🏻‍♀️"},
+    {"id": 7475, "label": "Badeschiff", "emoji": "🏊🏼"},
     ]
 CITY = 1
 DAYS_AHEAD = 14
